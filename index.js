@@ -1,27 +1,38 @@
 const express = require('express');
+const cors = require('cors');
 
 const app = express();
-app.use(express.json());
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const DEFAULT_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// Phase 2: Add your Topic Thread IDs here later
-const topicMap = {
-    // "portfolio-site": "12345",
-    // "client-dashboard": "67890"
+// Parse the allowed domains from Dokploy environment variables
+// Expected format: "https://mywebsite.com,https://another-site.com"
+const allowedDomains = process.env.ALLOWED_DOMAINS
+    ? process.env.ALLOWED_DOMAINS.split(',').map(d => d.trim())
+    : [];
+
+// Strict CORS Configuration
+const corsOptions = {
+    origin: function (origin, callback) {
+        // Reject requests that have no origin (e.g., direct curl requests or server-to-server)
+        // If you want to allow your own server scripts to test it, remove the '!origin' check.
+        if (!origin) {
+            return callback(new Error('Blocked: Missing Origin Header'), false);
+        }
+
+        if (allowedDomains.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error(`Blocked: Origin ${origin} is not allowed`), false);
+        }
+    },
+    methods: ['POST', 'OPTIONS'], // Only allow POST requests (and preflight OPTIONS)
+    allowedHeaders: ['Content-Type']
 };
 
-// Utility to prevent unescaped characters from breaking Telegram's HTML parser
-const escapeHtml = (text) => {
-    if (!text) return "N/A";
-    return text.toString()
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-};
-
-app.post('/report-error', async (req, res) => {
+// Apply CORS strictly to the reporting endpoint, then parse the JSON body
+app.post('/report-error', cors(corsOptions), express.json(), async (req, res) => {
     const {
         app_id,
         error_message,
@@ -32,10 +43,14 @@ app.post('/report-error', async (req, res) => {
         timestamp
     } = req.body;
 
-    // Determine destination (Topic or Default Chat)
-    const threadId = topicMap[app_id] || null;
+    const escapeHtml = (text) => {
+        if (!text) return "N/A";
+        return text.toString()
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+    };
 
-    // Build the formatted message
     const messageText = `
 🚨 <b>New Technical Error</b>
 <b>App:</b> ${escapeHtml(app_id)}
@@ -52,16 +67,11 @@ app.post('/report-error', async (req, res) => {
 <code>${escapeHtml(error_stack)}</code>
   `.trim();
 
-    // Prepare Telegram API payload
     const payload = {
         chat_id: DEFAULT_CHAT_ID,
         text: messageText,
         parse_mode: 'HTML'
     };
-
-    if (threadId) {
-        payload.message_thread_id = threadId;
-    }
 
     try {
         const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
@@ -71,19 +81,25 @@ app.post('/report-error', async (req, res) => {
         });
 
         if (!response.ok) {
-            const errorData = await response.text();
-            console.error('Telegram API Error:', errorData);
-            return res.status(500).json({ success: false, message: 'Failed to send to Telegram' });
+            console.error('Telegram API Error:', await response.text());
+            return res.status(500).json({ success: false, message: 'Failed to send report' });
         }
 
-        res.status(200).json({ success: true, message: 'Error reported successfully' });
+        res.status(200).json({ success: true, message: 'Error reported' });
     } catch (error) {
         console.error('Service Error:', error);
         res.status(500).json({ success: false, message: 'Internal Server Error' });
     }
 });
 
-// Health check endpoint for Dokploy
+// Custom error handler to catch CORS rejections gracefully and return JSON instead of HTML
+app.use((err, req, res, next) => {
+    if (err.message && err.message.startsWith('Blocked:')) {
+        return res.status(403).json({ success: false, message: 'Forbidden: Unauthorized Origin' });
+    }
+    next(err);
+});
+
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 3000;
