@@ -1,0 +1,12 @@
+{
+    "name": "telegram-error-reporter",
+    "version": "1.0.0",
+    "description": "Centralized error routing service",
+    "main": "index.js",
+    "scripts": {
+        "start": "node index.js"
+    },
+    "dependencies": {
+        "express": "^4.19.2"
+    }
+}
